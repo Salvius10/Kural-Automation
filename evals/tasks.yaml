@@ -1,0 +1,118 @@
+# Browser tasks run with typed goals, no STT (Plan §13.1).
+#   uv run python evals/run_tasks.py            all tasks
+#   uv run python evals/run_tasks.py flights    tasks whose id contains "flights"
+#
+# `url` pins a starting page. `url: null` + `start_page` exercises the start
+# resolver: the agent must decide where to go on its own, and `expect_start`
+# records which route it should take.
+
+tasks:
+  - id: flights_one_way
+    url: https://www.google.com/travel/flights?hl=en
+    goal: "Find one-way flights from Chennai to Bangalore on 2026-10-02 for one adult"
+    budget_s: 20
+
+  - id: flights_round_trip
+    url: https://www.google.com/travel/flights?hl=en
+    goal: "Find round trip flights from Chennai to Delhi leaving 2026-10-10 returning 2026-10-14"
+    budget_s: 25
+
+  - id: amazon_search_filter
+    url: https://www.amazon.in
+    goal: "Search for wireless earphones and sort the results by price low to high"
+    budget_s: 25
+
+  - id: maps_directions
+    url: https://www.google.com/maps
+    goal: "Get driving directions from Chennai Central to Chennai Airport"
+    budget_s: 25
+
+  - id: irctc_train_search
+    url: https://www.irctc.co.in/nget/train-search
+    goal: "Search for trains from Chennai to Coimbatore on 2026-10-05"
+    budget_s: 30
+
+  - id: bookmyshow_browse
+    url: https://in.bookmyshow.com
+    goal: "Show the movies playing in Chennai this week"
+    budget_s: 25
+
+  - id: wikipedia_lookup
+    url: https://en.wikipedia.org
+    goal: "Search for Thiruvalluvar and open the article"
+    budget_s: 15
+
+  - id: youtube_search
+    url: https://www.youtube.com
+    goal: "Search for Tamil folk music and open the first result"
+    budget_s: 20
+
+  - id: swiggy_restaurant
+    url: https://www.swiggy.com
+    goal: "Search for biryani restaurants that deliver"
+    budget_s: 25
+
+  - id: flipkart_price_filter
+    url: https://www.flipkart.com
+    goal: "Search for a laptop under 50000 rupees and apply the price filter"
+    budget_s: 30
+
+  # --- no-URL tasks: the start resolver decides where to go (Plan §7.11) ---
+
+  - id: ixigo_named_site
+    url: null
+    start_page: https://www.youtube.com
+    goal: "Open ixigo and find flights from Chennai to Mumbai on 2026-10-02"
+    expect_start: named
+    budget_s: 30
+
+  - id: makemytrip_named_site
+    url: null
+    start_page: https://en.wikipedia.org
+    goal: "On make my trip find hotels in Goa for 2026-10-02"
+    expect_start: named
+    budget_s: 30
+
+  - id: pick_known_site
+    url: null
+    start_page: https://en.wikipedia.org
+    goal: "Find one-way flights from Chennai to Bangalore on 2026-10-02"
+    expect_start: site
+    budget_s: 30
+
+  - id: current_page
+    url: null
+    start_page: https://www.amazon.in
+    goal: "Search for wireless earphones under 2000 rupees"
+    expect_start: here
+    budget_s: 25
+
+  - id: current_page_maps
+    url: null
+    start_page: https://www.google.com/maps
+    goal: "Find coffee shops near Adyar Chennai"
+    expect_start: here
+    budget_s: 25
+
+  - id: search_fallback
+    url: null
+    start_page: https://en.wikipedia.org
+    goal: "Find show timings for PVR Grand Galada Chennai"
+    expect_start: search
+    budget_s: 30
+
+  - id: search_fallback_local
+    url: null
+    start_page: https://en.wikipedia.org
+    goal: "Find the opening hours of the Government Museum Egmore"
+    expect_start: search
+    budget_s: 30
+
+  # --- multi-site: exercises NAVIGATE mid-task (Plan §7.11.4) ---
+
+  - id: navigate_between_sites
+    url: null
+    start_page: https://www.google.com/travel/flights?hl=en
+    goal: "Find the cheapest flight from Chennai to Mumbai on 2026-10-02, then open gmail"
+    expect_start: here
+    budget_s: 45

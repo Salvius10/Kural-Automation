@@ -1,0 +1,55 @@
+# Rules-only vocabulary for the normalizer (Plan §7.4) and the AssemblyAI
+# keyterms_prompt. Grow it from real misses found in runs/.
+cities:
+  Chennai: [chennai, madras, chen eye, chen nai, chennaai]
+  Bengaluru: [bengaluru, bangalore, bangaluru, banglore, bengalore]
+  Mumbai: [mumbai, bombay, mumbaai]
+  Delhi: [delhi, new delhi, dilli]
+  Hyderabad: [hyderabad, hydrabad, hyd]
+  Kolkata: [kolkata, calcutta]
+  Pune: [pune, poona]
+  Coimbatore: [coimbatore, kovai, covai]
+  Madurai: [madurai, madhurai]
+  Trichy: [trichy, tiruchirappalli, tiruchi]
+  Kochi: [kochi, cochin]
+  Ahmedabad: [ahmedabad, amdavad]
+  Jaipur: [jaipur]
+  Goa: [goa, panaji]
+  Trivandrum: [trivandrum, thiruvananthapuram]
+airports:
+  MAA: [chennai airport, maa]
+  BLR: [bangalore airport, bengaluru airport, blr]
+  BOM: [mumbai airport, bom]
+  DEL: [delhi airport, del]
+  HYD: [hyderabad airport, hyd airport]
+  CJB: [coimbatore airport, cjb]
+people: {}
+# Labels that always mean an irreversible action, in any language we support
+# (Plan §7.7 keyword floor). Matched case-insensitively as substrings.
+risky_labels:
+  - pay
+  - pay now
+  - buy
+  - buy now
+  - purchase
+  - place order
+  - order now
+  - book
+  - book now
+  - confirm
+  - confirm booking
+  - submit
+  - send
+  - transfer
+  - delete
+  - remove
+  - cancel booking
+  - unsubscribe
+  - checkout
+  - proceed to pay
+  - continue to payment
+  - make payment
+  - sign out
+  - log out
+  - bhugtan
+  - kharidein

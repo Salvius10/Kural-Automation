@@ -1,0 +1,61 @@
+# The only place a URL can come from, besides the current tab, links observed on
+# the page, and the search template (Plan §11.10). Models pick an id, never a URL.
+sites:
+  ixigo:
+    url: https://www.ixigo.com
+    aliases: [ixigo, exigo, ix a go, icigo]
+    about: Flight, train and bus search and booking in India
+  makemytrip:
+    url: https://www.makemytrip.com
+    aliases: [make my trip, mmt, makemytrip]
+    about: Flights, hotels and holiday booking
+  google_flights:
+    url: https://www.google.com/travel/flights
+    aliases: [google flights]
+    about: Flight search and price comparison
+  irctc:
+    url: https://www.irctc.co.in/nget/train-search
+    aliases: [irctc, train booking, railway]
+    about: Indian Railways train search and ticket booking
+  amazon:
+    url: https://www.amazon.in
+    aliases: [amazon, amazon in]
+    about: Buying products online
+  flipkart:
+    url: https://www.flipkart.com
+    aliases: [flipkart]
+    about: Buying products online in India
+  swiggy:
+    url: https://www.swiggy.com
+    aliases: [swiggy]
+    about: Ordering food delivery and groceries
+  zomato:
+    url: https://www.zomato.com
+    aliases: [zomato]
+    about: Restaurant search and food delivery
+  bookmyshow:
+    url: https://in.bookmyshow.com
+    aliases: [book my show, bookmyshow, bms]
+    about: Movie, event and show ticket booking in India
+  maps:
+    url: https://www.google.com/maps
+    aliases: [google maps, maps]
+    about: Places, directions, travel time
+  gmail:
+    url: https://mail.google.com
+    aliases: [gmail, mail, email]
+    about: Reading and sending email
+  calendar:
+    url: https://calendar.google.com
+    aliases: [google calendar, calendar]
+    about: Viewing and creating calendar events
+  youtube:
+    url: https://www.youtube.com
+    aliases: [youtube, you tube]
+    about: Watching and searching videos
+  github:
+    url: https://github.com
+    aliases: [github, git hub]
+    about: Code repositories, issues and pull requests
+search:
+  url_template: https://www.google.com/search?q={query}

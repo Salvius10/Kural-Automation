@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kural — voice browser agent</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #232a35; --text: #e6edf3;
+    --dim: #8b949e; --accent: #4f9cf9; --warn: #f0a04b; --ok: #3fb950; --bad: #f85149;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f8fa; --panel:#fff; --line:#d8dee4; --text:#1f2328; --dim:#636c76; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 20px; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  .state {
+    font: 600 11px/1 ui-monospace, monospace; padding: 5px 9px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--dim);
+  }
+  .state[data-s="RUNNING"] { color: var(--accent); border-color: var(--accent); }
+  .state[data-s="LISTENING"] { color: var(--ok); border-color: var(--ok); }
+  .state[data-s="WAITING_CONFIRM"], .state[data-s="WAITING_INFO"] { color: var(--warn); border-color: var(--warn); }
+  .state[data-s="BLOCKED"] { color: var(--bad); border-color: var(--bad); }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 900px) { .grid { grid-template-columns: 3fr 2fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+       margin: 0 0 10px; font-weight: 600; }
+  .heard { font-size: 18px; min-height: 1.5em; }
+  .heard .partial { color: var(--dim); }
+  .norm { color: var(--dim); font-size: 13px; margin-top: 4px; }
+  .doing { font-size: 15px; }
+  .needs { color: var(--warn); font-size: 15px; min-height: 1.5em; }
+  .goal { color: var(--dim); font-size: 13px; margin-top: 8px; word-break: break-word; }
+  .bar { display: flex; height: 22px; border-radius: 5px; overflow: hidden; border: 1px solid var(--line); }
+  .bar div { display: flex; align-items: center; justify-content: center; font: 10px/1 ui-monospace, monospace;
+             color: #06121f; min-width: 0; overflow: hidden; }
+  .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 11px; color: var(--dim); }
+  .legend b { color: var(--text); font-variant-numeric: tabular-nums; }
+  ol { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
+  li { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  li:last-child { border-bottom: 0; }
+  .kind { font: 10px/1.6 ui-monospace, monospace; color: var(--dim); min-width: 62px; text-transform: uppercase; }
+  .p { margin-left: auto; color: var(--dim); font: 11px/1.6 ui-monospace, monospace; }
+  .muted { color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Kural</h1>
+  <span class="state" id="state" data-s="IDLE">IDLE</span>
+  <span class="muted" id="url"></span>
+</header>
+
+<div class="grid">
+  <div class="grid" style="grid-template-columns:1fr">
+    <section>
+      <h2>🎤 Heard</h2>
+      <div class="heard" id="heard"><span class="muted">Hold F9 and speak.</span></div>
+      <div class="norm" id="norm"></div>
+      <div class="goal" id="goal"></div>
+    </section>
+    <section>
+      <h2>⚙️ Doing</h2>
+      <div class="doing" id="doing"><span class="muted">Nothing yet.</span></div>
+    </section>
+    <section>
+      <h2>❓ Needs</h2>
+      <div class="needs" id="needs"></div>
+    </section>
+    <section>
+      <h2>⏱️ Last command</h2>
+      <div class="bar" id="bar"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+  </div>
+  <section>
+    <h2>History</h2>
+    <ol id="history"></ol>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const STAGES = [
+  ["stt", "STT", "#4f9cf9"], ["norm", "Normalize", "#8b949e"],
+  ["jev", "Jev", "#3fb950"], ["exec", "Execute", "#f0a04b"],
+];
+let timings = {};
+
+function renderTimings() {
+  const total = Object.values(timings).reduce((a, b) => a + b, 0) || 1;
+  $("bar").innerHTML = "";
+  $("legend").innerHTML = "";
+  for (const [key, label, color] of STAGES) {
+    const ms = timings[key] || 0;
+    if (!ms) continue;
+    const cell = document.createElement("div");
+    cell.style.width = (ms / total * 100) + "%";
+    cell.style.background = color;
+    cell.textContent = ms >= 60 ? ms + "ms" : "";
+    $("bar").append(cell);
+    const item = document.createElement("span");
+    item.innerHTML = label + " <b>" + ms + "ms</b>";
+    $("legend").append(item);
+  }
+  const sum = document.createElement("span");
+  sum.innerHTML = "Total <b>" + total + "ms</b>";
+  $("legend").append(sum);
+}
+
+function addHistory(kind, text, probability) {
+  const row = document.createElement("li");
+  const k = document.createElement("span");
+  k.className = "kind"; k.textContent = kind;
+  const t = document.createElement("span"); t.textContent = text;
+  row.append(k, t);
+  if (probability != null) {
+    const p = document.createElement("span");
+    p.className = "p"; p.textContent = probability.toFixed(2);
+    row.append(p);
+  }
+  $("history").prepend(row);
+  while ($("history").children.length > 20) $("history").lastChild.remove();
+}
+
+function connect() {
+  const socket = new WebSocket("ws://" + location.host + "/events");
+  socket.onmessage = event => handle(JSON.parse(event.data));
+  socket.onclose = () => setTimeout(connect, 1000);
+}
+
+function handle(e) {
+  switch (e.type) {
+    case "Status":
+      $("state").textContent = e.state; $("state").dataset.s = e.state;
+      if (e.goal) $("goal").textContent = "Goal: " + e.goal;
+      break;
+    case "KeyDown":
+      $("heard").innerHTML = '<span class="partial">…</span>';
+      $("norm").textContent = ""; timings = {}; renderTimings();
+      break;
+    case "TranscriptPartial":
+      $("heard").innerHTML = '<span class="partial">' + e.text + "</span>";
+      break;
+    case "TranscriptFinal":
+      $("heard").textContent = e.raw;
+      timings.stt = e.stt_ms; renderTimings();
+      break;
+    case "Normalized":
+      $("norm").textContent = e.text;
+      timings.norm = e.norm_ms; renderTimings();
+      break;
+    case "IntentClassified":
+      timings.jev = e.jev_ms; renderTimings();
+      addHistory("intent", e.intent, e.confidence);
+      break;
+    case "GoalUpdated":
+      $("goal").textContent = "Goal: " + e.goal;
+      break;
+    case "StartResolved":
+      addHistory("start", e.mode + (e.site ? " → " + e.site : ""), null);
+      break;
+    case "ActionDecided":
+      $("doing").textContent = e.operation + " " + e.label;
+      break;
+    case "ActionExecuted":
+      timings.exec = e.exec_ms; renderTimings();
+      addHistory(e.kind, e.label + (e.text ? " · " + e.text : ""), null);
+      break;
+    case "PageObserved":
+      $("url").textContent = e.url;
+      break;
+    case "TabSwitched":
+      addHistory("tab", "followed a new tab", null);
+      break;
+    case "GateOpened":
+      $("needs").textContent = e.prompt;
+      break;
+    case "GateResolved":
+      $("needs").textContent = "";
+      addHistory("gate", e.kind + " → " + e.resolution, null);
+      break;
+    case "StateChanged":
+      $("state").textContent = e.to_state; $("state").dataset.s = e.to_state;
+      break;
+    case "RunStatusChanged":
+      $("doing").textContent = e.status + (e.detail ? " — " + e.detail : "");
+      break;
+    case "Notice":
+      $("needs").textContent = e.text;
+      break;
+    case "Error":
+      addHistory("error", e.where + ": " + e.message, null);
+      break;
+  }
+}
+connect();
+</script>
+</body>
+</html>

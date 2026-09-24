@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+runs/
+artifacts/
+data/profile.yaml
+evals/voice/*.wav
+.pytest_cache/
+.ruff_cache/

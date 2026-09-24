@@ -1,0 +1,12 @@
+# Recorded commands for the voice eval set (Plan §13.2).
+# Record 50-100 WAVs: 16 kHz mono 16-bit PCM, different rooms, noise levels,
+# speaking speeds and names. Keep the WAVs out of git (see .gitignore); this
+# file is the index.
+#
+# - file: 001.wav
+#   expected_goal_contains: ["Chennai", "Bangalore", "2026-10-02"]
+#   expected_intent: new_task
+#
+# - file: 002.wav
+#   expected_goal_contains: ["Saturday"]
+#   expected_intent: correction

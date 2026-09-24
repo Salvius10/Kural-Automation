@@ -1,0 +1,8 @@
+# Copy to data/profile.yaml (git-ignored) and fill in. Local only: never sent to
+# Jev, sent to Mercury only to map form fields, redacted in logs (Plan §7.12).
+name: ""
+gender: ""
+date_of_birth: ""        # YYYY-MM-DD
+email: ""
+phone: ""
+address: { line1: "", city: "", state: "", pincode: "" }
