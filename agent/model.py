@@ -15,7 +15,7 @@ import httpx
 from core.config import settings
 from core.http import typesafe_client
 
-from .questions import NEXT_ACTION, TARGET
+from .questions import NAVIGATE_TARGET, NEXT_ACTION, TARGET
 
 
 async def post_json(url, key, body, client=None):
@@ -163,10 +163,11 @@ def build_questions(goal, targets, controls, extra_questions=None):
                 }
                 for index, a in candidates.items()
             }
+        rules = [NEXT_ACTION, NAVIGATE_TARGET] if operation == "NAVIGATE" else [NEXT_ACTION, TARGET]
         questions[operation.lower() + "_target"] = {
             "type": "choice",
             "criteria": criteria,
-            "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
+            "instructions": {"goal": goal, "operation": operation, "rules": rules},
         }
     questions.update(extra_questions or {})
     return operations, questions
