@@ -70,6 +70,7 @@ def utterance_questions(goal_ctx, sites=None, include_start=True, include_choice
     """Every head the session manager may need from one utterance."""
     questions = {"intent": intent_question(goal_ctx)}
     goal = goal_ctx.get("latest_utterance") or goal_ctx.get("current_goal") or ""
+    questions.update(task_done_question(goal))
     if include_start:
         questions.update(start_questions(sites or {}, goal))
     if include_choice_gate:

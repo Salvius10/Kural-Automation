@@ -4,6 +4,11 @@ Push-to-talk owns the turn: the model's own endpointing is turned down so a
 mid-sentence pause cannot cut the user off, and key release sends
 `ForceEndpoint` instead of waiting for silence.
 
+Billing note: streaming is charged on **connection duration, idle included**,
+so the socket is opened on key down and closed `stt.idle_close_s` after the last
+utterance rather than held open all day. Key down happens a whole utterance
+before the transcript is needed, so the handshake is off the latency path.
+
 Verified against the v3 streaming reference (2026-09): `wss://streaming.assemblyai.com/v3/ws`,
 API key in the `Authorization` header with no "Bearer" prefix, `pcm_s16le` at
 16 kHz, `keyterms_prompt` as a JSON array (max 100 terms of <= 50 chars),
@@ -28,7 +33,8 @@ KEEPALIVE_S = 20
 
 
 class AssemblyAIStreaming:
-    """Implements the `SpeechToText` seam. One socket, kept warm across utterances."""
+    """Implements the `SpeechToText` seam. The socket spans a burst of
+    utterances, then closes: open on key down, idle-close `idle_close_s` later."""
 
     def __init__(self, bus=None, api_key=None, config=None):
         self.bus = bus
@@ -42,6 +48,8 @@ class AssemblyAIStreaming:
         self.formatted: asyncio.Future | None = None
         self.closing = False
         self.last_sent = 0.0
+        self.idle_close_s = getattr(self.config, "idle_close_s", 30.0)
+        self.idle_timer: asyncio.Task | None = None
 
     # ------------------------------------------------------------ connection
 
@@ -62,10 +70,13 @@ class AssemblyAIStreaming:
         return f"{self.config.url}?{urlencode(parameters)}"
 
     async def start(self):
+        """Validate the key; the socket itself opens on the first key press."""
         if not self.api_key:
             raise RuntimeError("ASSEMBLYAI_API_KEY is not set")
-        await self.connect()
         return self
+
+    def connected(self):
+        return self.socket is not None and self.socket.close_code is None
 
     async def connect(self):
         self.socket = await websockets.connect(
@@ -80,7 +91,7 @@ class AssemblyAIStreaming:
         return self.socket
 
     async def reconnect(self):
-        """Sessions expire and networks drop; a warm socket is the whole latency trick."""
+        """Open, or reopen after an idle close, an expiry, or a dropped network."""
         delay = 0.5
         while not self.closing:
             try:
@@ -136,12 +147,15 @@ class AssemblyAIStreaming:
     # ------------------------------------------------------------- utterance
 
     async def begin_utterance(self):
+        """Key down. Opens the socket if it is closed -- there is a whole
+        utterance of speech before the transcript is needed."""
+        self.cancel_idle_timer()
         loop = asyncio.get_running_loop()
         self.final = loop.create_future()
         self.formatted = loop.create_future()
         while not self.partial_queue.empty():
             self.partial_queue.get_nowait()
-        if self.socket is None or self.socket.close_code is not None:
+        if not self.connected():
             await self.reconnect()
 
     async def send_audio(self, pcm):
@@ -168,7 +182,42 @@ class AssemblyAIStreaming:
                 text = await asyncio.wait_for(self.formatted, timeout=FORMATTED_GRACE_S)
             except asyncio.TimeoutError:
                 pass
+        self.arm_idle_timer()
         return text
+
+    # ----------------------------------------------------------- idle closing
+
+    def arm_idle_timer(self):
+        """Close an idle socket: every second it stays open is billed."""
+        self.cancel_idle_timer()
+        if self.idle_close_s and self.idle_close_s > 0:
+            self.idle_timer = asyncio.create_task(self.close_when_idle())
+
+    def cancel_idle_timer(self):
+        if self.idle_timer and not self.idle_timer.done():
+            self.idle_timer.cancel()
+        self.idle_timer = None
+
+    async def close_when_idle(self):
+        try:
+            await asyncio.sleep(self.idle_close_s)
+        except asyncio.CancelledError:
+            return
+        await self.disconnect()
+
+    async def disconnect(self):
+        """Drop the socket but stay usable: the next key press reopens it."""
+        socket, self.socket = self.socket, None
+        for task in (self.reader, self.keeper):
+            if task and not task.done():
+                task.cancel()
+        self.reader = self.keeper = None
+        if socket is not None:
+            try:
+                await socket.send(json.dumps({"type": "Terminate"}))
+                await socket.close()
+            except Exception:
+                pass
 
     async def partials(self):
         while True:
@@ -176,6 +225,7 @@ class AssemblyAIStreaming:
 
     async def close(self):
         self.closing = True
+        self.cancel_idle_timer()
         for task in (self.reader, self.keeper):
             if task and not task.done():
                 task.cancel()

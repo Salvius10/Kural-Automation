@@ -6,12 +6,14 @@ What exists in this repo, how it fits together, and what is left to do.
   was actually built against it.
 - **[DECISIONS.md](DECISIONS.md)** records choices made where the Plan was
   ambiguous, and the vendor facts verified against live docs.
+- **[ERRORS.md](ERRORS.md)** records every bug hit while building: what it was,
+  what caused it, and how it was fixed.
 - **[agent/UPSTREAM.md](agent/UPSTREAM.md)** lists every local change to the
   vendored `jev-ultrafast` core.
 
-Status as of this document: **M0–M2a complete and offline-verified; M3–M6 built
-but unmeasured, because no API keys are configured yet.** 200 offline tests
-pass and `ruff` is clean.
+Status: **M0–M2a complete and verified live end to end (2026-09-26)** — all
+three vendors, the browser layer, and one full typed-goal run through the whole
+pipeline. 222 offline tests pass and `ruff` is clean. See §11.
 
 ---
 
@@ -21,9 +23,9 @@ pass and `ruff` is clean.
 |---|---|
 | Language / tooling | Python 3.12, `uv`, `ruff`, `pytest` (+`pytest-asyncio`) |
 | Python source | ~3,900 lines across `agent/`, `core/`, `voice/`, `ui/`, `scripts/`, `evals/` |
-| Tests | 200, all offline — `tests/` cannot reach the network (enforced by a fixture) |
+| Tests | 222, all offline — `tests/` cannot reach the network (enforced by a fixture) |
 | Vendored | `browser-use/jev-ultrafast` @ `1231850a0bf1a0c0341fe408ef1668dbbfdfac46` (MIT) |
-| External services | TypeSafe (Jev), Inception (Mercury), AssemblyAI (STT) — **keys not yet set** |
+| External services | TypeSafe (Jev), Inception (Mercury), AssemblyAI (STT) — **all three keys verified working** |
 | Entry point | `main.py` — voice by default, `--type` for stdin |
 | Status page | `http://127.0.0.1:8766` |
 
@@ -566,3 +568,156 @@ removed.
 | English only | `universal-streaming-english`; Hindi needs `universal-3-5-pro` (a `speech_model` change), Tamil is unsupported by any streaming model |
 | The agent shares your logged-in Chrome profile | That is the point, and why the gates exist. `tests/test_safety_set.py` must stay at 100% |
 | No uvloop on Windows | Measure the cost before chasing smaller wins |
+
+---
+
+## 11. Live verification — 2026-09-26
+
+Step 0 and Step 1 of §9 are done. Eleven API calls total, chosen to maximise
+information per call; no eval suite was run.
+
+### Results
+
+| Check | Result |
+|---|---|
+| Inception `GET /v1/models` | `["mercury-2", "mercury-2.5"]` — the pinned id is correct (free call) |
+| Mercury batch field values | Works; `{"1": "Chennai", "2": null}` in 623 ms |
+| Mercury single field value | Works; `'Chennai'` in 573 ms |
+| Mercury single, value absent | Returns `None` in 469 ms → the missing-info gate opens, nothing invented |
+| Mercury search words | `'PVR Grand Galada Chennai show timings'` — words only, no URL |
+| TypeSafe auth + `jev-1.13.0` | Valid; the pinned model answers |
+| Jev choice heads | Match `validate_choice()` exactly |
+| Jev boolean (`noul`) heads | **Shape was wrong in our validator — see below** |
+| Jev latency | Cold **1405 ms**, warm **299–345 ms** (budget ≤ 400 ms) |
+| AssemblyAI connection | All parameters accepted, including 29 keyterms; ~980 ms handshake |
+
+### The bug this found
+
+Boolean heads come back as `{"type": "noul", "noul": 0.9}` — a bare probability
+under `noul`, with no `confidence`. Our validator expected `probability` or a
+yes/no `probabilities` map, so **it rejected every boolean answer**.
+
+The defensive design in DECISIONS.md §2 held exactly as intended: an unparsable
+boolean became *no answer*, never a wrong "yes", so nothing unsafe happened. But
+the consequence was that three features were silently inert against the live
+API — `start_here` (so every task fell through to the search fallback),
+`needs_user_choice` (the choice gate never fired) and every `risky_*` score
+(risk gating fell back to the keyword floor alone).
+
+Fixed in `validate_noul()`, which now reads `noul` first and keeps the previous
+shapes as fallbacks. Confirmed live afterwards: `start_here` returns
+`{'probability': 0.9, 'confidence': 0.8}`. Regression tests pin both the live
+boolean and the live choice shape.
+
+### Other corrections made
+
+| Finding | Change |
+|---|---|
+| mercury-2.5 returns a flat `{"1": "Chennai"}`, not `{"values": {…}}` | `FIELD_VALUES` asks for the flat shape; the parser accepts either |
+| Jev cold start is 4–5× warm | `core/http.warm()` is load-bearing; keep it |
+| AssemblyAI bills idle connection time | Socket now opens on key down and idle-closes after 30 s (`stt.idle_close_s`) |
+| …which would have lost the first second of speech | `press()` starts capture **before** the handshake; frames buffer in the mic queue |
+
+### Also wired up (no API cost)
+
+- **Profile → field cache.** `core/profile.py` reads `data/profile.yaml`, keeps
+  only known keys, flattens the address, and merges into the Mercury payload
+  **only** — never into an event, so it cannot reach the log or the status page.
+- **`task_done` verifier.** Rides on the same request; a `DONE` the verifier
+  disputes (p < 0.5) returns the run to `ready` instead of claiming success,
+  capped at `MAX_DISPUTED_DONE` so a stubborn disagreement cannot loop.
+- **Tab-closed recovery.** `return_to_opener()` finally has a caller: if an
+  observe fails after an action, the agent falls back to the opener tab instead
+  of stranding the run on a dead target.
+- **Voice-layer tests** (`tests/test_voice_capture.py`, 8 tests) pinning the
+  connection parameters, the keyterms limits, idle-open behaviour and the mic
+  buffering.
+
+## 12. Browser layer, verified live — 2026-09-26
+
+Remote debugging enabled, Chrome wrote `DevToolsActivePort` (9222), the daemon
+came up. Everything below ran against a real Chrome; the mutating tests ran in
+**our own tab against the local `safety_fixture.html`**, never a real site.
+
+### Read-only, on a real Google results page
+
+| | |
+|---|---|
+| attach | 134 ms warm (11 s the first time — Chrome's one-time "Allow remote debugging?" prompt) |
+| observe | 96 ms, then 45 ms |
+| extraction | 25 elements with correct roles, labels and operations; the search box correctly offered both `TYPE_TEXT` and `CLICK` |
+| freshness | 50 ms, `True` |
+| keyword floor | no false positives on that page |
+
+Note: browser-harness renames the controlled tab with a 🐴 prefix so the user can
+see which tab it owns.
+
+### Executor and guards, on the local fixture
+
+| Check | Result |
+|---|---|
+| Type into an ordinary field | `Passenger name` → `'Melvin S'` |
+| Type into OTP / Card / CVV / UPI PIN / Aadhaar | all refused by the executor |
+| `type="password"` | never even offered as a fill action — `snapshot.js` excludes it at source |
+| In-page JS guard, Python check bypassed | OTP and CVV still refused |
+| Click a safe control | executed; the page recorded the touch |
+| Freshness after a title change | `False` |
+| Per-action guard after removing the target | `False`, and `act()` refused with `StalePage` |
+| Click a button under a full-screen overlay | refused as covered |
+
+### The bug this found: a closed tab
+
+`Browser.__init__` only created a tab when `open_in="new_tab"` **and** a URL was
+passed. With `url=None` it fell through to `attach()`, taking over the user's
+active tab — and `close()` then closed it, because ownership was inferred from
+*configuration* rather than tracked as *fact*. A real Google tab was closed
+during testing.
+
+Fixed: `open_in="new_tab"` always creates a tab, and `self.owned` records what
+actually happened. `attach()` and `switch()` (following a page-opened tab) both
+set it to `False`, so only a tab this object created can ever be closed. Two
+regression tests pin it.
+
+### End to end, one typed goal
+
+`"type Chennai into the From field"` on the fixture, budget capped at 4 steps /
+6 model calls:
+
+```
+     0ms  TranscriptFinal   "type Chennai into the From field"
+    21ms  Normalized        facts {'cities': ['Chennai']}
+   626ms  IntentClassified  new_task p=0.84 (596ms, jev-1.13.0)
+  1599ms  StartResolved     search  google.com/search?q=travel+booking+site+From+field
+  3438ms  ActionDecided     TYPE_TEXT Search p=1.00 (350ms)
+  3496ms  RiskScored        0/25 risky (464ms)
+  4235ms  ActionExecuted    fill Search = Chennai
+  8715ms  ActionExecuted    navigate Go to makemytrip
+ 10084ms  RunStatusChanged  blocked  Reached the run's model-call budget
+```
+
+Every stage worked: intent, start resolution, navigation from a code-owned URL,
+snapshot, decision, field cache, execution, re-observation, `NAVIGATE`, and a
+clean stop at the budget. Risk scoring and the field cache both produced real
+results, which is the second confirmation that the `noul` fix took.
+
+The agent chose `search` rather than staying on the fixture — defensible, since
+the page is titled "Safety fixture" and the goal reads like a UI instruction
+rather than a task. No model wrote a URL: Mercury supplied query *words*, the
+template supplied the URL.
+
+Warm per-tick Jev latency held at **320–355 ms** across the whole run.
+
+### What that run cost, and the fix it prompted
+
+15 Jev requests and 5 Mercury requests for 3 actions — and **8 of the 15 Jev
+calls were risk scoring**, several on fingerprints the agent had already moved
+past. Pages settle through several fingerprints and only the last is ever acted
+on, so scoring the intermediate ones is pure waste.
+
+`RiskScorer.score()` and `FieldCache.prefetch()` now cancel work still running
+for a superseded fingerprint (or an older `goal_version`). Three tests cover it.
+
+### Still untested against a real page
+
+Tab following (`openerId` adoption) and the choice gate on a genuine results
+page — both need a site that opens a popup or returns many similar results.

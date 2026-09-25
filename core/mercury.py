@@ -130,9 +130,12 @@ async def batch_field_values(goal, fields, page_text, facts):
         "page": page_text,
     }
     output, meta = await complete_json(FIELD_VALUES, payload, max_tokens=512)
-    values = output.get("values") if isinstance(output, dict) else None
-    if not isinstance(values, dict):
+    # Observed live: mercury-2.5 returns the flat mapping the prompt asks for.
+    # A `values` wrapper is accepted too, so a future prompt or model cannot
+    # silently empty the cache.
+    if not isinstance(output, dict):
         raise MercuryError("Text model returned no values object; cache left empty.")
+    values = output.get("values") if isinstance(output.get("values"), dict) else output
     cleaned = {}
     for index in indexes:
         if index not in values:

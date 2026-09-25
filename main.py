@@ -71,8 +71,11 @@ class VoiceInput:
         self.bus.clock.release()  # provisional zero point; reset precisely on release
         self.bus.publish(KeyDown())
         self.session.key_down()
-        await self.stt.begin_utterance()
+        # Capture first. Opening the socket can take ~1 s, and the first word is
+        # spoken during it -- the frames wait in the mic queue (~4 s of buffer)
+        # and the pump drains them in order once the socket is up.
         self.mic.begin()
+        await self.stt.begin_utterance()
         self.pump = asyncio.create_task(self.stream_audio())
 
     async def stream_audio(self):
@@ -138,7 +141,7 @@ async def run(typed=False):
     bus.add_sink(log)
 
     await http.warm()
-    browser = AsyncBrowser(open_in=config.navigation.open_in)
+    browser = AsyncBrowser(open_in=config.navigation.open_in, activate=config.navigation.activate)
     session = Session(bus, browser, text_writer=Mercury())
 
     try:

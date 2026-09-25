@@ -11,8 +11,9 @@ browser and on a local status page at <http://127.0.0.1:8766>.
 **[Plan.md](Plan.md) is the complete build brief** — architecture, latency
 budget, safety rules, milestones and exit criteria. Read it before changing
 anything here. [DECISIONS.md](DECISIONS.md) records choices made while
-building; [agent/UPSTREAM.md](agent/UPSTREAM.md) lists every local change to
-the vendored agent core.
+building, [ERRORS.md](ERRORS.md) every bug hit and how it was fixed, and
+[agent/UPSTREAM.md](agent/UPSTREAM.md) every local change to the vendored agent
+core.
 
 ## Setup
 

@@ -54,10 +54,15 @@ class RiskScorer:
         return actions
 
     def score(self, page, goal=""):
-        """Background Jev pass, one request with one boolean head per clickable element."""
+        """Background Jev pass, one request with one boolean head per clickable element.
+
+        A page that has already been replaced is not worth scoring: pages settle
+        through several fingerprints, and only the last one is ever acted on.
+        """
         fingerprint = page.get("fingerprint", "")
         if fingerprint in self.inflight:
             return self.inflight[fingerprint]
+        self.supersede(fingerprint)
         actions = self.clickable(page)
         if not actions:
             return None
@@ -94,6 +99,13 @@ class RiskScorer:
             self.bus.publish(
                 RiskScored(count=len(result["answers"]), risky=risky, jev_ms=result["latency_ms"])
             )
+
+    def supersede(self, fingerprint):
+        """Cancel scoring still running for an older fingerprint."""
+        for older, task in list(self.inflight.items()):
+            if older != fingerprint and not task.done():
+                task.cancel()
+                self.inflight.pop(older, None)
 
     def known(self, action):
         return int(action.get("node", -1)) in self.scores

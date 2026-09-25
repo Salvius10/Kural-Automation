@@ -27,6 +27,7 @@ from .events import (
 )
 from .field_cache import FieldCache
 from .fused import read_intent, utterance_questions
+from .profile import load_profile
 from .risk import RiskScorer
 from .start import StartResolver, sites
 
@@ -90,7 +91,7 @@ class Session:
         self.bus = bus
         self.browser = browser
         self.text_writer = text_writer
-        self.field_cache = FieldCache(bus, self.config.page_text_chars)
+        self.field_cache = FieldCache(bus, self.config.page_text_chars, profile=load_profile())
         self.risk = RiskScorer(bus, self.config.thresholds.risk_threshold)
         self.start_resolver = StartResolver(bus, text_writer)
         self.state = State.IDLE

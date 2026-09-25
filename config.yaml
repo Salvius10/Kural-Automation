@@ -10,12 +10,14 @@ stt:
   end_of_turn_confidence_threshold: 1.0
   max_turn_silence_ms: 2500
   keyterms_from_gazetteer: 50
+  idle_close_s: 30                # close the socket when idle; billing counts idle time
 thresholds:
   intent_min_confidence: 0.6
   risk_threshold: 0.3
 budgets: { max_steps: 40, max_model_calls: 100, confirm_timeout_s: 60 }
 navigation:
   open_in: current_tab            # or new_tab
+  activate: true                  # bring the agent's tab to the front so you can watch it
   sites_file: data/sites.yaml
   profile_file: data/profile.yaml
   start_here_threshold: 0.6

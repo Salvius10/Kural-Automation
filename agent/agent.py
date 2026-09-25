@@ -26,6 +26,10 @@ from .model import choose, field_context, field_text
 # worth asking whether the goal actually says which one to pick (Plan §7.11.6).
 RESULT_LIKE_CLICKABLES = 8
 CHOICE_GATE_THRESHOLD = 0.6
+# DONE is a claim, not proof. A second opinion below this refuses it.
+DONE_THRESHOLD = 0.5
+# ...but only so many times: a stubborn disagreement must not become a loop.
+MAX_DISPUTED_DONE = 2
 
 
 class GateRequired(Exception):
@@ -71,6 +75,7 @@ class Agent:
         self.cancelled = False
         self.needs_choice = False
         self.choice_asked_for = None
+        self.done_disputed = 0
         self.state = dict(
             goal=goal,
             goal_version=1,
@@ -146,6 +151,12 @@ class Agent:
     def clickables(self, page):
         return len({a["node"] for a in page.get("actions", []) if a.get("kind") == "click"})
 
+    def done_question(self):
+        """A second opinion on DONE, fused into the tick that might claim it (Plan §10)."""
+        from core.fused import task_done_question
+
+        return task_done_question(self.state["goal"])
+
     def choice_gate_question(self, page):
         """Ask on result-like pages, once per goal version -- an answered goal says enough."""
         if self.choice_asked_for == self.goal_version:
@@ -167,7 +178,11 @@ class Agent:
             raise ValueError("This run has stopped. Start a fresh task.")
         if len(state["decisions"]) >= self.max_model_calls:
             raise ValueError("Reached the run's model-call budget")
-        questions = {**self.choice_gate_question(state["page"]), **(extra_questions or {})}
+        questions = {
+            **self.choice_gate_question(state["page"]),
+            **self.done_question(),
+            **(extra_questions or {}),
+        }
         decision = await choose(
             state["page"],
             state["goal"],
@@ -275,6 +290,16 @@ class Agent:
             if not await self.browser.fresh(page):
                 state["status"] = "ready"
                 raise StalePage("Page changed since the decision. Choose again.")
+            verdict = (decision.get("extra") or {}).get("task_done")
+            disputed = verdict is not None and verdict["probability"] < DONE_THRESHOLD
+            if selected == "DONE" and disputed:
+                # The verifier disagrees with the claim. Keep working rather than
+                # reporting a success nobody checked (Plan §10, §18).
+                self.done_disputed += 1
+                self.emit(RunStatusChanged(status="done-disputed", detail="verifier disagreed"))
+                if self.done_disputed <= MAX_DISPUTED_DONE:
+                    state["status"] = "ready"
+                    return self.snapshot()
             self.set_status("done" if selected == "DONE" else "blocked")
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             return self.snapshot()
@@ -398,7 +423,16 @@ class Agent:
                 followed = None
             if followed:
                 self.emit(TabSwitched(from_target=followed[0], to_target=followed[1], reason="opened-by-page"))
-        await self.observe()
+        try:
+            await self.observe()
+        except Exception:
+            # The tab we were on closed under us -- a popup that finished, say.
+            # Go back to the tab that opened it rather than stranding the run.
+            returned = await self.browser.return_to_opener()
+            if not returned:
+                raise
+            self.emit(TabSwitched(from_target=returned[0], to_target=returned[1], reason="tab-closed"))
+            await self.observe()
         state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         state["history"][-1].update(
             page_changed=state["page"]["fingerprint"] != page["fingerprint"],

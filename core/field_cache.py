@@ -43,9 +43,11 @@ def editable_fields(page):
 
 
 class FieldCache:
-    def __init__(self, bus=None, page_text_chars=6000):
+    def __init__(self, bus=None, page_text_chars=6000, profile=None):
         self.bus = bus
         self.page_text_chars = page_text_chars
+        # Merged into the Mercury payload only. Never emitted, never logged.
+        self.profile = profile or {}
         self.values: dict[tuple[int, int], object] = {}
         self.inflight: dict[tuple[int, str], asyncio.Task] = {}
 
@@ -78,14 +80,25 @@ class FieldCache:
         key = (int(goal_version), page.get("fingerprint", ""))
         if key in self.inflight:
             return self.inflight[key]
+        self.supersede(key)
         task = asyncio.create_task(self._fill(key, page, fields, goal, goal_version, facts or {}))
         self.inflight[key] = task
         return task
 
+    def supersede(self, key):
+        """Cancel a prefetch still running for a page or goal we have left behind."""
+        for older, task in list(self.inflight.items()):
+            if older != key and not task.done():
+                task.cancel()
+                self.inflight.pop(older, None)
+
     async def _fill(self, key, page, fields, goal, goal_version, facts):
         try:
             values, meta = await batch_field_values(
-                goal, fields, page.get("text", "")[: self.page_text_chars], facts
+                goal,
+                fields,
+                page.get("text", "")[: self.page_text_chars],
+                {**self.profile, **facts},
             )
         except asyncio.CancelledError:
             self.inflight.pop(key, None)

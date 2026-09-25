@@ -55,12 +55,18 @@ def validate_choice(answer, ids):
 def validate_noul(answer):
     """Boolean head -> probability of yes.
 
-    Either documented shape is accepted: a bare `probability`, or a yes/no
-    choice with probabilities. Anything else is invalid, and the caller must
-    treat an invalid boolean as "no answer" -- never as "yes".
+    Live shape (verified against jev-1.13.0, 2026-09-26):
+    `{"type": "noul", "noul": 0.9}` -- a bare probability under `noul`, with no
+    separate confidence. The `probability` / yes-no-`probabilities` forms are
+    still accepted so a shape change cannot silently disable every boolean head.
+
+    Anything else is invalid, and the caller must treat an invalid boolean as
+    "no answer" -- never as "yes".
     """
     try:
-        if isinstance(answer, dict) and type(answer.get("probability")) in (int, float):
+        if isinstance(answer, dict) and type(answer.get("noul")) in (int, float):
+            probability = float(answer["noul"])
+        elif isinstance(answer, dict) and type(answer.get("probability")) in (int, float):
             probability = float(answer["probability"])
         elif isinstance(answer, dict) and isinstance(answer.get("probabilities"), dict):
             probabilities = {str(k).lower(): v for k, v in answer["probabilities"].items()}
@@ -74,6 +80,7 @@ def validate_noul(answer):
     confidence = answer.get("confidence")
     return {
         "probability": probability,
+        # No confidence is returned for a boolean; distance from 0.5 stands in.
         "confidence": confidence if type(confidence) in (int, float) else abs(probability - 0.5) * 2,
     }
 

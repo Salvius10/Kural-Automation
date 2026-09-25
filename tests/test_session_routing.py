@@ -350,3 +350,170 @@ def test_the_choice_head_only_rides_on_result_like_pages():
     assert "needs_user_choice" in made.choice_gate_question(RESULTS_PAGE)
     made.choice_asked_for = made.goal_version
     assert made.choice_gate_question(RESULTS_PAGE) == {}          # asked once per goal version
+
+
+async def test_a_disputed_done_keeps_working(session, scripted, events):
+    """DONE is a claim: when the verifier disagrees, the run continues (Plan §10)."""
+    scripted.append(
+        decision("DONE", extra=intent("new_task", {"start_here": noul(0.95), "task_done": noul(0.1)}))
+    )
+    scripted.append(decision("DONE", extra={"task_done": noul(0.95)}))
+    await session.utterance("find flights to mumbai")
+    await drain(session)
+    statuses = [e.status for e in events if e.type == "RunStatusChanged"]
+    assert "done-disputed" in statuses
+    assert session.state is State.DONE  # the second, confirmed DONE is accepted
+
+
+async def test_a_confirmed_done_is_accepted_immediately(session, scripted, events):
+    scripted.append(
+        decision("DONE", extra=intent("new_task", {"start_here": noul(0.95), "task_done": noul(0.9)}))
+    )
+    await session.utterance("find flights to mumbai")
+    await drain(session)
+    assert session.state is State.DONE
+    assert "done-disputed" not in [e.status for e in events if e.type == "RunStatusChanged"]
+
+
+async def test_a_disputed_done_cannot_loop_forever(session, scripted):
+    """A verifier that never agrees must not trap the run."""
+    from agent.agent import MAX_DISPUTED_DONE
+
+    for _ in range(MAX_DISPUTED_DONE + 3):
+        scripted.append(decision("DONE", extra={"task_done": noul(0.0)}))
+    scripted.insert(0, decision("DONE", extra=intent("new_task", {"start_here": noul(0.95), "task_done": noul(0.0)})))
+    await session.utterance("find flights to mumbai")
+    await drain(session)
+    assert session.state is State.DONE
+    assert session.agent.done_disputed <= MAX_DISPUTED_DONE + 1
+
+
+def test_the_profile_reaches_mercury_but_never_an_event():
+    """Plan §11.11: profile values go to Mercury only, and are never logged."""
+    from core.field_cache import FieldCache
+    from core.profile import flatten
+
+    facts = flatten({"name": "A Name", "email": "a@b.test", "address": {"city": "Chennai", "line1": ""}})
+    assert facts == {"name": "A Name", "email": "a@b.test", "address_city": "Chennai"}
+    cache = FieldCache(profile=facts)
+    assert cache.profile["name"] == "A Name"
+    # Nothing the cache emits carries a value -- only counts.
+    from core.events import FieldValuesCached
+
+    fields = set(FieldValuesCached.model_fields)
+    assert fields.isdisjoint({"values", "profile", "facts"})
+
+
+def test_the_profile_ignores_stray_keys():
+    from core.profile import flatten
+
+    assert flatten({"password": "hunter2", "name": "A"}) == {"name": "A"}
+    assert flatten(None) == {}
+    assert flatten({"name": "   "}) == {}
+
+
+async def test_the_agent_returns_to_the_opener_when_a_followed_tab_closes():
+    """A popup that closes under the agent must not strand the run."""
+    from agent.agent import Agent
+
+    class ClosingTab(FakeBrowser):
+        def __init__(self):
+            super().__init__([SEARCH_PAGE])
+            self.failures = 1
+            self.returned = False
+
+        async def observe(self, screenshot=False):
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("target closed")
+            return await super().observe(screenshot=screenshot)
+
+        async def return_to_opener(self):
+            self.returned = True
+            return ("tab-2", "tab-1")
+
+    browser = ClosingTab()
+    made = Agent("do the thing", browser)
+    made.state["page"] = SEARCH_PAGE
+    made.state["started_at"] = 0.0
+    made.state["history"].append({"kind": "click", "action": "x", "page_changed": None})
+    await made.after_action(SEARCH_PAGE)
+    assert browser.returned
+    assert made.state["page"] is SEARCH_PAGE
+
+
+async def test_a_dead_tab_with_no_opener_still_raises():
+    from agent.agent import Agent
+
+    class DeadTab(FakeBrowser):
+        async def observe(self, screenshot=False):
+            raise RuntimeError("target closed")
+
+    made = Agent("do the thing", DeadTab())
+    made.state["page"] = SEARCH_PAGE
+    made.state["started_at"] = 0.0
+    made.state["history"].append({"kind": "click", "action": "x", "page_changed": None})
+    with pytest.raises(RuntimeError):
+        await made.after_action(SEARCH_PAGE)
+
+
+async def test_a_superseded_risk_score_is_cancelled():
+    """Pages settle through several fingerprints; only the last is ever acted on."""
+    import asyncio
+
+    from core.risk import RiskScorer
+
+    scorer = RiskScorer(threshold=0.3)
+    started = []
+
+    async def never_finishes(*args, **kwargs):
+        started.append(1)
+        await asyncio.sleep(60)
+
+    scorer._score = never_finishes
+    first = scorer.score(page([action(1, "click", "Details")], fingerprint="settling"))
+    second = scorer.score(page([action(1, "click", "Details")], fingerprint="settled"))
+    await asyncio.sleep(0)
+    assert first.cancelled() or first.done()
+    assert not second.done()
+    assert list(scorer.inflight) == ["settled"]
+    second.cancel()
+
+
+async def test_a_superseded_field_prefetch_is_cancelled():
+    import asyncio
+
+    from core.field_cache import FieldCache
+
+    cache = FieldCache()
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    cache._fill = never_finishes
+    first = cache.prefetch(page([action(1, "fill", "From")], fingerprint="settling"), "goal", 1)
+    second = cache.prefetch(page([action(1, "fill", "From")], fingerprint="settled"), "goal", 1)
+    await asyncio.sleep(0)
+    assert first.cancelled() or first.done()
+    assert len(cache.inflight) == 1
+    second.cancel()
+
+
+async def test_a_goal_change_supersedes_an_in_flight_prefetch():
+    import asyncio
+
+    from core.field_cache import FieldCache
+
+    cache = FieldCache()
+
+    async def never_finishes(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    cache._fill = never_finishes
+    same_page = page([action(1, "fill", "From")], fingerprint="same")
+    old = cache.prefetch(same_page, "fly friday", 1)
+    new = cache.prefetch(same_page, "fly saturday", 2)
+    await asyncio.sleep(0)
+    assert old.cancelled() or old.done()
+    assert list(cache.inflight) == [(2, "same")]
+    new.cancel()

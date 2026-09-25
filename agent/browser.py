@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from browser_harness.admin import ensure_daemon
-from browser_harness.helpers import cdp, current_tab, list_tabs, switch_tab
+from browser_harness.helpers import activate_tab, cdp, current_tab, list_tabs, switch_tab
 
 from core.sensitive import BLOCKED_AUTOCOMPLETE, blocked_label, js_pattern
 
@@ -29,6 +29,23 @@ INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension
 # The vocabulary itself lives in core/sensitive.py so every layer shares one list.
 
 
+# CDP tells us the attached tab is gone in several wordings; all mean the same
+# thing: re-attach before doing anything else.
+DEAD_SESSION = (
+    "Session with given id not found",
+    "No target with given id",
+    "Target closed",
+    "-32001",
+    "not_attached",
+    "cdp_disconnected",
+)
+
+
+def dead_session(error):
+    text = str(error)
+    return any(marker in text for marker in DEAD_SESSION)
+
+
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
@@ -40,15 +57,20 @@ class BlockedField(ValueError):
 class Browser:
     """Synchronous CDP body (upstream). Call it through `AsyncBrowser`, not directly."""
 
-    def __init__(self, url=None, *, open_in="current_tab"):
+    def __init__(self, url=None, *, open_in="current_tab", activate=True):
         ensure_daemon()
         self.open_in = open_in
+        self.activate = activate
         self.target = None
         self.session = None
         self.tab_stack: list[str] = []
         self.after_input = None
-        if url is not None and open_in == "new_tab":
-            self.open_tab(url)
+        # Ownership is a fact we record, never inferred from configuration: only
+        # a tab this object actually created may ever be closed.
+        self.owned = False
+        self.reattached = 0
+        if open_in == "new_tab":
+            self.open_tab(url or "about:blank")
         else:
             self.attach()
             if url:
@@ -63,25 +85,49 @@ class Browser:
             tab = current_tab()
         except Exception:
             tab = None
-        if not tab or not tab.get("url") or tab["url"].startswith(INTERNAL):
-            usable = [t for t in list_tabs(include_chrome=False) if not t["url"].startswith(INTERNAL)]
-            tab = usable[0] if usable else None
+        live = {t["targetId"] for t in list_tabs()}
+        if not tab or tab.get("targetId") not in live or not tab.get("url") or tab["url"].startswith(INTERNAL):
+            usable = [
+                t for t in list_tabs(include_chrome=False)
+                if not t["url"].startswith(INTERNAL) and t["targetId"] in live
+            ]
+            tab = usable[-1] if usable else None
         if tab is None:
             return self.open_tab("about:blank")
         self.target = tab["targetId"]
+        self.owned = False
         self.session = switch_tab(self.target)
+        self.show()
         self.prepare()
         return self.target
 
     def open_tab(self, url):
         self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        self.owned = True
         self.session = switch_tab(self.target)
+        self.show()
         # An owned background tab needs a viewport of its own; the user's tab already has one.
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         self.prepare()
         if url and url != "about:blank":
             self.navigate(url)
         return self.target
+
+    def show(self):
+        """Make the agent's tab the visible one.
+
+        `current_tab()` returns the tab the *daemon* last attached to, which
+        persists between runs and need not be the one in front of the user. We
+        cannot cheaply detect Chrome's focused tab -- evaluating in every target
+        takes ~2 s per background tab, and focus emulation makes `hasFocus()`
+        lie -- so instead the agent makes its choice visible.
+        """
+        if not self.activate or not self.target:
+            return
+        try:
+            activate_tab(self.target)
+        except Exception:
+            pass
 
     def prepare(self):
         # Keep rAF/menus rendering even when the tab is not the frontmost one.
@@ -92,7 +138,9 @@ class Browser:
 
     def switch(self, target_id):
         self.target = target_id
+        self.owned = False  # a tab the page opened is not ours to close
         self.session = switch_tab(target_id)
+        self.show()
         self.prepare()
         return target_id
 
@@ -136,7 +184,33 @@ class Browser:
     # -------------------------------------------------------------- plumbing
 
     def call(self, method, **params):
-        return cdp(method, session_id=self.session, **params)
+        """Re-attach once if the tab went away.
+
+        Tabs close, Chrome restarts, the daemon reattaches elsewhere. A session
+        id cached at startup is not valid forever, and the first symptom used to
+        be a raw `-32001` out of `Page.navigate`.
+        """
+        try:
+            return cdp(method, session_id=self.session, **params)
+        except RuntimeError as error:
+            if not dead_session(error):
+                raise
+            self.reattach()
+            return cdp(method, session_id=self.session, **params)
+
+    def reattach(self):
+        """Recover from a tab that disappeared, by opening a fresh one.
+
+        Deliberately *not* `attach()`: falling back to whatever tab the user
+        happens to have open would navigate their reading away to the agent's
+        next URL. The old page is gone either way, so take an empty tab of our
+        own -- which `owned` then lets us clean up. Never re-runs an action;
+        callers decide that.
+        """
+        previous, self.session = self.session, None
+        self.open_tab("about:blank")
+        self.reattached = getattr(self, "reattached", 0) + 1
+        return previous, self.session
 
     def evaluate(self, expression):
         response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -149,6 +223,7 @@ class Browser:
         if not isinstance(url, str) or not url.startswith(("http://", "https://", "about:blank")):
             raise ValueError("Refusing to navigate to a non-http URL")
         self.after_input = None
+        self.show()
         self.call("Page.navigate", url=url)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -202,6 +277,10 @@ class Browser:
                 if attempt == 9:
                     raise
                 time.sleep(0.02)
+            except RuntimeError as error:
+                if not dead_session(error) or attempt > 1:
+                    raise
+                self.reattach()
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
@@ -223,13 +302,23 @@ class Browser:
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
             time.sleep(0.1)
-        result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        try:
+            result = browser_operation(
+                {"operation": "act", "session": self.session, "action": action, "text": text}
+            )
+        except RuntimeError as error:
+            if not dead_session(error):
+                raise
+            # Never re-run a mutation: re-attach, then make the caller observe
+            # and decide again rather than guessing whether this one landed.
+            self.reattach()
+            raise StalePage("The tab went away mid-action. Observe again.") from None
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
     def close(self):
-        # The user's own tab is never closed; only a tab this agent opened is.
-        if self.target and self.open_in == "new_tab":
+        # The user's own tab is never closed; only a tab this agent created is.
+        if self.target and self.owned:
             try:
                 cdp("Target.closeTarget", targetId=self.target)
             except Exception:
@@ -334,7 +423,7 @@ def browser_operation(request):
 class AsyncBrowser:
     """The `BrowserDriver` seam. Every CDP call runs on one thread, so ordering holds."""
 
-    def __init__(self, browser=None, **kwargs):
+    def __init__(self, browser=None, **kwargs):  # kwargs: open_in, activate
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cdp")
         self.browser = browser
         self._kwargs = kwargs

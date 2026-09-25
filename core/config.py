@@ -35,6 +35,10 @@ class SttConfig(BaseModel):
     end_of_turn_confidence_threshold: float = 1.0
     max_turn_silence_ms: int = 2500
     keyterms_from_gazetteer: int = 50
+    # Streaming is billed on connection time, idle included. Push-to-talk opens
+    # the socket on key down -- a whole utterance before the transcript is
+    # needed -- so holding it open while idle buys no latency, only cost.
+    idle_close_s: float = 30.0
 
 
 class Thresholds(BaseModel):
@@ -50,6 +54,9 @@ class Budgets(BaseModel):
 
 class NavigationConfig(BaseModel):
     open_in: str = "current_tab"
+    # Bring the agent's tab to the front. The whole premise is watching your own
+    # Chrome do the work, and a tab you cannot see looks like nothing happened.
+    activate: bool = True
     sites_file: str = "data/sites.yaml"
     profile_file: str = "data/profile.yaml"
     start_here_threshold: float = 0.6
